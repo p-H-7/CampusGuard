@@ -56,7 +56,8 @@ fun CameraPreviewScreen() {
     // Sender -> your laptop server IP
     val alertSender = remember {
         AlertSender(
-            apiBase = "http://10.206.138.203:8787",
+//            apiBase = "http://10.206.138.203:8787",
+            apiBase = "http://192.168.1.27:8787",
             token = "demo-token"
         )
     }
@@ -107,7 +108,7 @@ fun CameraPreviewScreen() {
                                     "Detection: ${result.eventType}, conf=${result.confidence}, anomalous=${result.isAnomalous}"
                                 )
 
-                                if (result.isAnomalous && result.confidence > 0.70f) {
+                                if (result.isAnomalous && result.confidence > 0.35f) {
                                     detectionResult = result
                                     showAlertDialog = true
                                 }

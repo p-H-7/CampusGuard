@@ -34,9 +34,6 @@ class InferenceEngine(private val context: Context) {
     private val personThreshold = 0.40f
     private val knifeThreshold = 0.35f
 
-    // simple smoothing to reduce flicker/false positives for knife
-    private var knifeHitScore = 0 // 0..3
-
     init {
         try {
             ortEnvironment = OrtEnvironment.getEnvironment()
@@ -189,54 +186,30 @@ class InferenceEngine(private val context: Context) {
      * Uses a simple temporal smoothing (knifeHitScore) to reduce flicker.
      */
     private fun checkKnife(outputData: FloatArray): DetectionResult? {
-        // knife confidence for anchor i is:
-        // output[ classesBaseOffset + (knifeClassIndex * 8400) + i ]
         val knifeBase = classesBaseOffset + (knifeClassIndex * numDetections)
 
         if (knifeBase >= outputData.size) {
-            // Model might not be COCO-80
             if (frameCount % 60 == 0) {
                 Log.w("InferenceEngine", "Knife base index out of bounds. Is this a COCO-80 model?")
             }
-            knifeHitScore = max(knifeHitScore - 1, 0)
             return null
         }
 
         var bestKnife = 0.0f
-        var bestIdx = -1
-
         for (i in 0 until numDetections) {
             val idx = knifeBase + i
             if (idx >= outputData.size) break
             val conf = outputData[idx]
-            if (conf > bestKnife) {
-                bestKnife = conf
-                bestIdx = i
-            }
+            if (conf > bestKnife) bestKnife = conf
         }
 
-        // smoothing
         if (bestKnife > knifeThreshold) {
-            knifeHitScore = minOf(knifeHitScore + 1, 3)
-        } else {
-            knifeHitScore = max(knifeHitScore - 1, 0)
-        }
-
-        // require it to persist a bit
-        if (knifeHitScore >= 2 && bestKnife > knifeThreshold) {
-            // optionally grab approximate box at same anchor (note: true knife box quality depends on model training)
-            val x = outputData[bestIdx]
-            val y = outputData[bestIdx + numDetections]
-            val w = outputData[bestIdx + 2 * numDetections]
-            val h = outputData[bestIdx + 3 * numDetections]
-
-            Log.i("InferenceEngine", "🔪 KNIFE DETECTED conf=$bestKnife (score=$knifeHitScore)")
+            Log.i("InferenceEngine", "🔪 KNIFE DETECTED conf=$bestKnife")
 
             return DetectionResult(
                 isAnomalous = true,
                 confidence = bestKnife,
                 eventType = "Knife Detected - Possible Weapon Threat"
-                // If your DetectionResult supports box info, this is where you'd include x,y,w,h.
             )
         }
 
