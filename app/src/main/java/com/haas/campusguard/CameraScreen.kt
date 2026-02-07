@@ -2,6 +2,7 @@ package com.haas.campusguard
 
 import android.Manifest
 import android.graphics.Bitmap
+import android.provider.Settings
 import android.util.Log
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -17,8 +18,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
-import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -34,12 +35,8 @@ fun CameraScreen() {
     }
 
     when {
-        cameraPermissionState.status.isGranted -> {
-            CameraPreviewScreen()
-        }
-        else -> {
-            PermissionDeniedScreen()
-        }
+        cameraPermissionState.status.isGranted -> CameraPreviewScreen()
+        else -> PermissionDeniedScreen()
     }
 }
 
@@ -48,11 +45,27 @@ fun CameraPreviewScreen() {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    // Unique device id for demo (stable per phone)
+    val deviceId = remember {
+        Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID) ?: "unknown-device"
+    }
+
     // Initialize inference engine
     val inferenceEngine = remember { InferenceEngine(context) }
 
+    // Sender -> your laptop server IP
+    val alertSender = remember {
+        AlertSender(
+            apiBase = "http://10.206.138.203:8787",
+            token = "demo-token"
+        )
+    }
+
     var detectionResult by remember { mutableStateOf<DetectionResult?>(null) }
     var showAlertDialog by remember { mutableStateOf(false) }
+
+    // Keep the latest frame to attach as a screengrab
+    var lastFrameBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
     val cameraExecutor: ExecutorService = remember { Executors.newSingleThreadExecutor() }
 
@@ -82,15 +95,18 @@ fun CameraPreviewScreen() {
                         // Process every 15th frame to reduce compute
                         if (frameCount % 15 == 0) {
                             try {
-                                // Convert ImageProxy to Bitmap
                                 val bitmap = imageProxy.toBitmap()
 
-                                // Run AI detection
+                                // Save latest frame (scaled smaller for network + memory)
+                                lastFrameBitmap = Bitmap.createScaledBitmap(bitmap, 640, 480, true)
+
                                 val result = inferenceEngine.detectAnomaly(bitmap)
 
-                                Log.d("CameraScreen", "Detection result: ${result.eventType}, confidence: ${result.confidence}, anomalous: ${result.isAnomalous}")
+                                Log.d(
+                                    "CameraScreen",
+                                    "Detection: ${result.eventType}, conf=${result.confidence}, anomalous=${result.isAnomalous}"
+                                )
 
-                                // Show alert if anomaly detected
                                 if (result.isAnomalous && result.confidence > 0.70f) {
                                     detectionResult = result
                                     showAlertDialog = true
@@ -149,6 +165,28 @@ fun CameraPreviewScreen() {
             },
             onResponse = { level ->
                 Log.d("CameraScreen", "User selected: $level")
+
+                // Map UI choice to server verdict
+                val verdict = when (level) {
+                    AlertLevel.HIGH -> "YES"
+                    AlertLevel.MEDIUM -> "MAYBE"
+                    AlertLevel.LOW -> null // don't send
+                }
+
+                if (verdict != null) {
+                    val frameToSend = lastFrameBitmap
+                    val res = detectionResult!!
+
+                    alertSender.sendAlert(
+                        deviceId = deviceId,
+                        eventType = res.eventType,
+                        modelConfidence = res.confidence,
+                        operatorVerdict = verdict,
+                        frameBitmap = frameToSend,
+                        notes = "Operator confirmed on phone"
+                    )
+                }
+
                 showAlertDialog = false
                 detectionResult = null
             }
@@ -250,7 +288,7 @@ fun ImageProxy.toBitmap(): Bitmap {
     val out = java.io.ByteArrayOutputStream()
     yuvImage.compressToJpeg(
         android.graphics.Rect(0, 0, this.width, this.height),
-        100,
+        90,
         out
     )
 
@@ -266,7 +304,7 @@ data class DetectionResult(
 )
 
 enum class AlertLevel {
-    HIGH,    // Campus-wide alert
-    MEDIUM,  // Security only
-    LOW      // Dismissed
+    HIGH,
+    MEDIUM,
+    LOW
 }
